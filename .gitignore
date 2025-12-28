@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Env / secrets
+.env
+*.env
+
+# Jupyter / temporary files
+.ipynb_checkpoints/
+*.log
+
+# Airflow
+/airflow/logs/
+/airflow/venv/
+/tmp/checkpoints/
+
+# OS
+.DS_Store

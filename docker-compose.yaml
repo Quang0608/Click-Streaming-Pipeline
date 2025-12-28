@@ -1,0 +1,162 @@
+version: '3.8'
+
+networks:
+  appnet:
+    driver: bridge
+
+volumes:
+  postgres-db-volume:
+  zookeeper-data:
+  zookeeper-log:
+  zookeeper-secrets:
+  kafka-data:
+  kafka-secrets:
+  cassandra-data:
+  mysql-data:
+
+x-airflow-common: &airflow-common
+  build: .  # build from local Dockerfile
+  image: ${AIRFLOW_IMAGE_NAME:-extending_airflow:latest}
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./scripts:/opt/airflow/scripts
+    - /home/quangnm/mysql-connector-j-8.0.33:/opt/airflow/jars
+  networks:
+    - appnet
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+
+  # ===========================
+  # PostgreSQL
+  # ===========================
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    networks:
+      - appnet
+
+  # ===========================
+  # Airflow
+  # ===========================
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+
+  airflow-init:
+    <<: *airflow-common
+    command: version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+
+  # ===========================
+  # Zookeeper
+  # ===========================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper-2
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      COMPONENT: zookeeper
+    volumes:
+      - zookeeper-secrets:/etc/zookeeper/secrets
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+    ports:
+      - "2181:2181"
+    networks:
+      - appnet
+
+  # ===========================
+  # Kafka
+  # ===========================
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-2
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      COMPONENT: kafka
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+      - kafka-secrets:/etc/kafka/secrets
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    networks:
+      - appnet
+
+  # ===========================
+  # Cassandra
+  # ===========================
+  cassandra:
+    image: cassandra:latest
+    container_name: cassandra-2
+    environment:
+      MAX_HEAP_SIZE: 1G
+      HEAP_NEWSIZE: 512M
+      COMPONENT: cassandra
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    ports:
+      - "9042:9042"
+    networks:
+      - appnet
+
+  
+  mysql:
+    image: mysql:8.0
+    container_name: mysql-2
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_USER: airflow
+      MYSQL_PASSWORD: airflow
+    command: --local-infile=1
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./mysql/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
+    networks:
+      - appnet
